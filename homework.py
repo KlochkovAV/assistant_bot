@@ -4,21 +4,29 @@ import time
 import logging
 
 import requests
+from requests import RequestException
 from dotenv import load_dotenv
-from telebot import TeleBot
+from telebot import TeleBot, apihelper
 
-from exceptions import TokenNotFound, HomeworkNotFound
+from exceptions import TokenNotFound
 
 load_dotenv(override=True)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-handler = logging.StreamHandler(sys.stdout)
+
 formatter = logging.Formatter(
     '%(asctime)s; %(levelname)s; %(message)s'
 )
-handler.setFormatter(formatter)
-logger.addHandler(handler)
+
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(formatter)
+
+file_handler = logging.FileHandler('app.log', encoding='utf-8')
+file_handler.setFormatter(formatter)
+
+logger.addHandler(console_handler)
+logger.addHandler(file_handler)
 
 PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -36,19 +44,19 @@ HOMEWORK_VERDICTS = {
 
 
 def check_tokens():
-    """Проверка токенов."""
-    for name, element in {
+    """Проверка доступности токенов."""
+    vars = {
         'Токен практикума': PRACTICUM_TOKEN,
         'Токен телеграма': TELEGRAM_TOKEN,
-        'ID чата': TELEGRAM_CHAT_ID,
-    }.items():
+    }
+    miss_vars = []
+
+    for name, element in vars.items():
         if element is None:
-            logger.critical(
-                f'Отсутствует обязательная переменная окружения {name}'
-            )
-            raise TokenNotFound(
-                f'Отсутствует обязательная переменная окружения {name}'
-            )
+            logger.critical(f'Отсутствует токен {name}')
+            miss_vars.append(name)
+    if len(miss_vars) > 0:
+        raise TokenNotFound(f'Не найден(ы) {', '.join(miss_vars)}')
 
 
 def send_message(bot, message):
@@ -56,8 +64,10 @@ def send_message(bot, message):
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logger.debug('Сообщение успешно отправлено')
-    except Exception as error:
-        logger.error(f'Cообщение не отправлено {error}')
+    except apihelper.ApiException as error:
+        logger.error(f"Ошибка доступа к API: {error}")
+    except RequestException as error:
+        logger.error(f"Ошибка запроса: {error}")
 
 
 def get_api_answer(timestamp):
@@ -65,26 +75,28 @@ def get_api_answer(timestamp):
     try:
         payload = {'from_date': timestamp}
         response = requests.get(ENDPOINT, headers=HEADERS, params=payload)
-        if response.status_code != 200:
-            raise requests.RequestException(
-                f'API вернул код {response.status_code}'
-            )
-    except Exception as error:
+    except apihelper.ApiException as error:
+        logger.error(f"Ошибка доступа к API: {error}")
+    except RequestException as error:
         raise Exception(f'Ошибка {error}')
+    if response.status_code != 200:
+        raise requests.RequestException(
+            f'Ошибка запроса: {response.status_code}'
+        )
     return response.json()
 
 
 def check_response(response):
     """Проверка ответа от API."""
-    if type(response) is not dict:
-        logger.error('Неожиданный тип данных')
+    if not isinstance(response, dict):
         raise TypeError('Неожиданный тип данных')
     homeworks = response.get('homeworks')
-    if type(homeworks) is not list:
-        logger.error('Неожиданный тип данных')
+    if homeworks is None:
+        raise KeyError('Ключ homeworks не обнаружен')
+    if not isinstance(homeworks, list):
         raise TypeError('Неожиданный тип данных')
     if homeworks == []:
-        raise HomeworkNotFound('Отсутствует обновление статуса')
+        logger.debug('Обновления статуса нет')
     return homeworks
 
 
@@ -109,10 +121,15 @@ def parse_status(homework):
 
 def main():
     """Основная логика работы бота."""
-    check_tokens()
+    try:
+        check_tokens()
+    except TokenNotFound:
+        sys.exit()
 
     bot = TeleBot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
+
+    old_message = ''
 
     while True:
 
@@ -121,15 +138,20 @@ def main():
             homeworks = check_response(response)
             for homework in homeworks:
                 message = parse_status(homework)
-                send_message(bot, message)
+                if message != old_message:
+                    send_message(bot, message)
+                    old_message = message
 
-        except HomeworkNotFound:
-            logger.debug('Отсутствует обновление статуса')
+        except (TypeError, ValueError) as error:
+            logger.error(f'Ошибка данных {error}')
 
-        except Exception as error:
+        except apihelper.ApiException as error:
             logger.error(f'Ошибка при запросе к основному API: {error}')
             message = f'Сбой в работе программы: {error}'
             send_message(bot, message)
+
+        except RequestException as error:
+            logger.error(f'Ощибка запроса {error}')
 
         time.sleep(RETRY_PERIOD)
 
