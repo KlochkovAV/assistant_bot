@@ -8,7 +8,7 @@ from requests import RequestException
 from dotenv import load_dotenv
 from telebot import TeleBot, apihelper
 
-from exceptions import TokenNotFound
+from exceptions import TokenNotFound, ResponseError, RequestError
 
 load_dotenv(override=True)
 
@@ -55,7 +55,7 @@ def check_tokens():
         if element is None:
             logger.critical(f'Отсутствует токен {name}')
             miss_vars.append(name)
-    if len(miss_vars) > 0:
+    if miss_vars:
         raise TokenNotFound(f'Не найден(ы) {', '.join(miss_vars)}')
 
 
@@ -75,14 +75,12 @@ def get_api_answer(timestamp):
     try:
         payload = {'from_date': timestamp}
         response = requests.get(ENDPOINT, headers=HEADERS, params=payload)
-    except apihelper.ApiException as error:
-        logger.error(f"Ошибка доступа к API: {error}")
-    except RequestException as error:
-        raise Exception(f'Ошибка {error}')
+    except apihelper.ApiException:
+        raise ResponseError('Ошибка доступа к Telegram API')
+    except RequestException:
+        raise RequestError('Ошибка запроса')
     if response.status_code != 200:
-        raise requests.RequestException(
-            f'Ошибка запроса: {response.status_code}'
-        )
+        raise ResponseError(f'Ошибка доступа: {response.status_code}')
     return response.json()
 
 
@@ -95,8 +93,6 @@ def check_response(response):
         raise KeyError('Ключ homeworks не обнаружен')
     if not isinstance(homeworks, list):
         raise TypeError('Неожиданный тип данных')
-    if homeworks == []:
-        logger.debug('Обновления статуса нет')
     return homeworks
 
 
@@ -110,10 +106,8 @@ def parse_status(homework):
         ('status', status)
     ]:
         if element is None:
-            logger.error(f'Отсутсвует {name}')
             raise KeyError(f'Отсутсвует {name}')
     if status not in HOMEWORK_VERDICTS:
-        logger.error('Неожиданный статус домашней работы')
         raise ValueError('Неожиданный статус домашней работы')
     verdict = HOMEWORK_VERDICTS.get(status)
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
@@ -129,29 +123,29 @@ def main():
     bot = TeleBot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
 
-    old_message = ''
+    old_message = None
 
     while True:
 
         try:
             response = get_api_answer(timestamp)
             homeworks = check_response(response)
-            for homework in homeworks:
-                message = parse_status(homework)
-                if message != old_message:
-                    send_message(bot, message)
-                    old_message = message
+            if homeworks:
+                timestamp = int(time.time())
+                for homework in homeworks:
+                    message = parse_status(homework)
+                    if message != old_message:
+                        send_message(bot, message)
+                        old_message = message
+            else:
+                logger.debug('Обновления статуса нет')
 
-        except (TypeError, ValueError) as error:
-            logger.error(f'Ошибка данных {error}')
-
-        except apihelper.ApiException as error:
-            logger.error(f'Ошибка при запросе к основному API: {error}')
-            message = f'Сбой в работе программы: {error}'
-            send_message(bot, message)
-
-        except RequestException as error:
-            logger.error(f'Ощибка запроса {error}')
+        except Exception as error:
+            if message != old_message:
+                logger.error(f'Ошибка при запросе к основному API: {error}')
+                message = f'Сбой в работе программы: {error}'
+                send_message(bot, message)
+                old_message = message
 
         time.sleep(RETRY_PERIOD)
 
