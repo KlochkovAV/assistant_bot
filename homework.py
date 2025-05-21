@@ -48,6 +48,7 @@ def check_tokens():
     vars = {
         'Токен практикума': PRACTICUM_TOKEN,
         'Токен телеграма': TELEGRAM_TOKEN,
+        'Идентификатор чата': TELEGRAM_CHAT_ID
     }
     miss_vars = []
 
@@ -64,10 +65,12 @@ def send_message(bot, message):
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logger.debug('Сообщение успешно отправлено')
+        return True
     except apihelper.ApiException as error:
         logger.error(f"Ошибка доступа к API: {error}")
     except RequestException as error:
         logger.error(f"Ошибка запроса: {error}")
+    return False
 
 
 def get_api_answer(timestamp):
@@ -90,10 +93,13 @@ def check_response(response):
         raise TypeError('Неожиданный тип данных')
     homeworks = response.get('homeworks')
     if homeworks is None:
-        raise KeyError('Ключ homeworks не обнаружен')
+        raise KeyError('Ключ homeworks не найден')
     if not isinstance(homeworks, list):
         raise TypeError('Неожиданный тип данных')
-    return homeworks
+    current_date = response.get('current_date')
+    if current_date is None:
+        raise KeyError('Ключ current_date не найден')
+    return homeworks, current_date
 
 
 def parse_status(homework):
@@ -129,22 +135,18 @@ def main():
 
         try:
             response = get_api_answer(timestamp)
-            homeworks = check_response(response)
-            if homeworks:
-                timestamp = int(time.time())
-                for homework in homeworks:
-                    message = parse_status(homework)
-                    if message != old_message:
-                        send_message(bot, message)
-                        old_message = message
-            else:
+            homeworks, current_date = check_response(response)
+            if not homeworks:
                 logger.debug('Обновления статуса нет')
+            for homework in homeworks:
+                message = parse_status(homework)
+                if send_message(bot, message):
+                    timestamp = current_date
 
         except Exception as error:
-            if message != old_message:
-                logger.error(f'Ошибка при запросе к основному API: {error}')
-                message = f'Сбой в работе программы: {error}'
-                send_message(bot, message)
+            logger.error(f'Ошибка при запросе к основному API: {error}')
+            message = f'Сбой в работе программы: {error}'
+            if send_message(bot, message) and message != old_message:
                 old_message = message
 
         time.sleep(RETRY_PERIOD)
