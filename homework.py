@@ -99,7 +99,6 @@ def check_response(response):
     current_date = response.get('current_date')
     if current_date is None:
         raise KeyError('Ключ current_date не найден')
-    return homeworks, current_date
 
 
 def parse_status(homework):
@@ -135,7 +134,9 @@ def main():
 
         try:
             response = get_api_answer(timestamp)
-            homeworks, current_date = check_response(response)
+            check_response(response)
+            homeworks = response.get('homeworks')
+            current_date = response.get('current_date')
             if not homeworks:
                 logger.debug('Обновления статуса нет')
             for homework in homeworks:
