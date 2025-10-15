@@ -19,8 +19,8 @@ def current_timestamp():
 
 @pytest.fixture
 def homework_module():
-    import homework
-    return homework
+    import assistant
+    return assistant
 
 
 @pytest.fixture
